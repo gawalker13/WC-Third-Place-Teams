@@ -1687,7 +1687,7 @@ def build_tournament_table(bracket_data: dict, n_sims: int) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # LOAD DATA
 # ─────────────────────────────────────────────────────────────────────────────
-CSV_PATH    = os.path.join(os.path.dirname(__file__), "results.csv")
+CSV_PATH    = os.path.join(os.path.dirname(__file__), "all_international_soccer_results.csv")
 CSV_FTABLE  = os.path.join(os.path.dirname(__file__), "third_place_combinations.csv")
 team_stats  = load_team_stats(CSV_PATH, cutoff_year=2018)
 ftable      = load_ftable(CSV_FTABLE)
