@@ -237,8 +237,8 @@ TOURNAMENT_WEIGHTS: dict[str, float] = {
     "African Cup of Nations":                    2.5,
     "AFC Asian Cup":                             2.2,
     "Gold Cup":                                  2.6,
-    "Oceania Nations Cup":                       2.0,
-    "AFF Championship":                          2.0,
+    "Oceania Nations Cup":                       2.2,
+    "AFF Championship":                          2.2,
     "ASEAN Championship":                        2.0,
     "EAFF Championship":                         2.0,
     "SAFF Cup":                                  2.0,
@@ -856,11 +856,14 @@ def run_monte_carlo(n_sims: int, team_stats: dict, ftable: dict = None):
     # ── Bracket counters ──────────────────────────────────────────────────────
     r32_s1: dict = {mn: {} for mn in range(73, 89)}   # slot-1 occupancy
     r32_s2: dict = {mn: {} for mn in range(73, 89)}   # slot-2 occupancy
-    r32_wc: dict = {mn: {} for mn in range(73, 89)}   # R32 win counts
+    r32_wc: dict = {mn: {} for mn in range(73, 89)}   # R32 win counts  (match-indexed)
     r32_mu: dict = {mn: {} for mn in range(73, 89)}   # matchup pair counts (t1, t2)
-    r16_wc: dict = {}
-    qf_wc:  dict = {}
-    sf_wc:  dict = {}
+    r16_wc: dict = {}                                  # R16 wins flat  (team→count, for table)
+    qf_wc:  dict = {}                                  # QF wins flat
+    sf_wc:  dict = {}                                  # SF wins flat
+    r16_wm: dict = {mn: {} for mn in [89,90,91,92,93,94,95,96]}  # R16 wins by match
+    qf_wm:  dict = {mn: {} for mn in [97,98,99,100]}             # QF wins by match
+    sf_wm:  dict = {mn: {} for mn in [101,102]}                  # SF wins by match
     final_c: dict = {}
     champ_c: dict = {}
 
@@ -944,6 +947,7 @@ def run_monte_carlo(n_sims: int, team_stats: dict, ftable: dict = None):
             if not t1 or not t2: continue
             w = _ko(t1, t2)
             r16_wc[w] = r16_wc.get(w, 0) + 1
+            r16_wm[mn][w] = r16_wm[mn].get(w, 0) + 1
             r16_it[mn] = w
 
         # QF — matches 97-100
@@ -953,6 +957,7 @@ def run_monte_carlo(n_sims: int, team_stats: dict, ftable: dict = None):
             if not t1 or not t2: continue
             w = _ko(t1, t2)
             qf_wc[w] = qf_wc.get(w, 0) + 1
+            qf_wm[mn][w] = qf_wm[mn].get(w, 0) + 1
             qf_it[mn] = w
 
         # SF — matches 101-102
@@ -964,6 +969,7 @@ def run_monte_carlo(n_sims: int, team_stats: dict, ftable: dict = None):
             final_c[t2] = final_c.get(t2, 0) + 1
             w = _ko(t1, t2)
             sf_wc[w] = sf_wc.get(w, 0) + 1
+            sf_wm[mn][w] = sf_wm[mn].get(w, 0) + 1
             sf_it[mn] = w
 
         # Final
@@ -1017,9 +1023,12 @@ def run_monte_carlo(n_sims: int, team_stats: dict, ftable: dict = None):
         "r32_s2": r32_s2,
         "r32_w":  r32_wc,
         "r32_mu": r32_mu,
-        "r16_w":  r16_wc,
+        "r16_w":  r16_wc,   # flat team→count (for tournament table)
         "qf_w":   qf_wc,
         "sf_w":   sf_wc,
+        "r16_wm": r16_wm,   # match-indexed (for bracket view)
+        "qf_wm":  qf_wm,
+        "sf_wm":  sf_wm,
         "final":  final_c,
         "champ":  champ_c,
     }
@@ -1304,77 +1313,290 @@ def build_hist_table(yr):
 
 def build_r32_cards(bracket_data: dict, n_sims: int) -> str:
     """
-    HTML grid of 16 R32 match cards.
-    Each card lists the most likely team pairings for that match slot,
-    with P(that exact matchup actually happens).
+    Full bracket tree (R32 → R16 → QF → SF → Final) with nested CSS connector
+    lines. Only R32 match cards show matchup probabilities; R16/QF/SF/Final are
+    empty bracket nodes — no future-round predictions.
     """
-    r32_mu = bracket_data["r32_mu"]   # {mn: {(t1, t2): count}}
+    r32_mu = bracket_data["r32_mu"]
+    TOP_N  = 5
+    BR     = "var(--border)"
 
-    TOP_N = 5  # matchup rows to show per card
-
-    cards = ""
-    for mn in range(73, 89):
+    # ── R32 match card ───────────────────────────────────────────────────────
+    def match_card(mn):
         lbl1, lbl2 = R32_SLOT_LABELS[mn]
-
-        # Sort matchups by frequency
-        top_mu = sorted(r32_mu[mn].items(), key=lambda x: -x[1])[:TOP_N]
-        top_p  = top_mu[0][1] / n_sims * 100 if top_mu else 1.0  # for bar scaling
-
+        top_mu  = sorted(r32_mu[mn].items(), key=lambda x: -x[1])[:TOP_N]
+        top_cnt = top_mu[0][1] if top_mu else 1
         rows = ""
         for (t1, t2), cnt in top_mu:
-            f1   = FLAGS.get(t1, "🏳")
-            f2   = FLAGS.get(t2, "🏳")
-            p    = cnt / n_sims * 100
-            bar  = p / top_p * 100          # relative to top matchup
-            pc   = ("p-safe"   if p >= 20 else
-                    "p-likely" if p >= 10 else
-                    "p-bubble" if p >= 4  else "p-danger")
+            f1 = FLAGS.get(t1, "");  f2 = FLAGS.get(t2, "")
+            p  = cnt / n_sims * 100
+            bw = cnt / top_cnt * 100
+            pc = ("p-safe" if p >= 20 else "p-likely" if p >= 10
+                  else "p-bubble" if p >= 4 else "p-danger")
             rows += (
-                f'<tr>'
-                f'<td style="padding:5px 8px;text-align:left;white-space:nowrap;font-size:11px">'
-                f'<span style="font-weight:600">{f1} {t1}</span>'
-                f'<span style="color:var(--muted);font-size:10px;margin:0 5px">vs</span>'
-                f'<span style="font-weight:600">{f2} {t2}</span>'
-                f'</td>'
-                f'<td style="padding:5px 8px;width:44px;white-space:nowrap">'
-                f'<span class="pill {pc}" style="font-size:10px;min-width:38px;padding:2px 6px">'
-                f'{p:.1f}%</span>'
-                f'</td>'
-                f'<td style="padding:5px 8px 5px 0;width:80px">'
-                f'<div class="bar-wrap" style="width:72px">'
-                f'<div class="bar-fill" style="width:{bar * 0.72:.1f}px;background:var(--accent)"></div>'
+                f'<div style="display:flex;align-items:center;gap:5px;margin-bottom:5px">'
+                f'<span style="font-size:13px;line-height:1">{f1}</span>'
+                f'<span style="font-size:10.5px;font-weight:600;color:var(--text);'
+                f'white-space:nowrap">{t1}</span>'
+                f'<span style="font-size:9px;color:var(--muted);margin:0 1px">vs</span>'
+                f'<span style="font-size:13px;line-height:1">{f2}</span>'
+                f'<span style="font-size:10.5px;font-weight:600;color:var(--text);'
+                f'white-space:nowrap;flex:1;overflow:hidden;text-overflow:ellipsis">{t2}</span>'
+                f'<span class="pill {pc}" style="font-size:9.5px;min-width:34px;padding:2px 4px;'
+                f'flex-shrink:0">{p:.1f}%</span>'
+                f'<div style="width:44px;height:7px;background:rgba(100,116,139,.18);'
+                f'border-radius:2px;overflow:hidden;flex-shrink:0">'
+                f'<div style="height:100%;width:{bw:.0f}%;background:var(--accent);'
+                f'border-radius:2px"></div></div>'
                 f'</div>'
-                f'</td>'
-                f'</tr>'
             )
-
-        cards += (
-            f'<div style="background:var(--surf);border:1px solid var(--border);'
-            f'border-radius:8px;overflow:hidden">'
-            f'<div style="background:var(--surf2);padding:5px 10px;'
-            f'border-bottom:1px solid var(--border);'
-            f'display:flex;justify-content:space-between;align-items:center">'
-            f'<span style="font-weight:800;font-size:11px;color:var(--gold)">Match {mn}</span>'
-            f'<span style="font-size:9px;color:var(--muted)">{lbl1}&nbsp;vs&nbsp;{lbl2}</span>'
+        return (
+            f'<div style="background:var(--surf);border:1px solid {BR};border-radius:7px;'
+            f'padding:9px 11px;width:320px;box-sizing:border-box;flex-shrink:0">'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
+            f'margin-bottom:6px">'
+            f'<span style="font-size:10.5px;font-weight:800;color:var(--gold)">Match {mn}</span>'
+            f'<span style="font-size:8px;color:var(--muted)">{lbl1} · {lbl2}</span>'
             f'</div>'
-            f'<table style="width:100%;border-collapse:collapse">'
-            f'<thead><tr>'
-            f'<th style="text-align:left;padding:3px 8px;font-size:8.5px;color:var(--muted);'
-            f'text-transform:uppercase;letter-spacing:.05em;background:rgba(34,39,58,.5);'
-            f'border-bottom:1px solid var(--border)">Most likely matchup</th>'
-            f'<th style="padding:3px 8px;font-size:8.5px;color:var(--muted);text-transform:uppercase;'
-            f'background:rgba(34,39,58,.5);border-bottom:1px solid var(--border);'
-            f'white-space:nowrap">P(matchup)</th>'
-            f'<th style="background:rgba(34,39,58,.5);border-bottom:1px solid var(--border)"></th>'
-            f'</tr></thead>'
-            f'<tbody>{rows}</tbody>'
-            f'</table>'
+            f'<div style="font-size:7.5px;font-weight:700;color:var(--muted);'
+            f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">'
+            f'Most Likely Matchup</div>'
+            + rows +
             f'</div>'
         )
 
+    # ── Empty bracket node (R16 / QF / SF) ──────────────────────────────────
+    def node(label):
+        return (
+            f'<div style="display:flex;align-items:center;justify-content:center;'
+            f'padding:5px 8px;font-size:8.5px;font-weight:700;color:var(--gold);'
+            f'border:1px solid {BR};border-radius:5px;background:var(--surf2);'
+            f'text-align:center;white-space:nowrap;line-height:1.35">{label}</div>'
+        )
+
+    # ── Bracket pair: stack two items, add connector + node on one side ──────
+    def bpair(top, bottom, label, side, gap="8px"):
+        nd = node(label)
+        if side == "right":
+            conn = (
+                f'<div style="display:flex;flex-direction:column;width:80px;flex-shrink:0">'
+                f'<div style="flex:1;border-right:2px solid {BR};border-bottom:2px solid {BR};'
+                f'border-radius:0 0 5px 0;margin-left:36px"></div>'
+                f'{nd}'
+                f'<div style="flex:1;border-right:2px solid {BR};border-top:2px solid {BR};'
+                f'border-radius:0 5px 0 0;margin-left:36px"></div>'
+                f'</div>'
+            )
+            return (
+                f'<div style="display:flex;align-items:stretch">'
+                f'<div style="display:flex;flex-direction:column;gap:{gap}">'
+                f'{top}{bottom}</div>'
+                f'{conn}</div>'
+            )
+        else:
+            conn = (
+                f'<div style="display:flex;flex-direction:column;width:80px;flex-shrink:0">'
+                f'<div style="flex:1;border-left:2px solid {BR};border-bottom:2px solid {BR};'
+                f'border-radius:0 0 0 5px;margin-right:36px"></div>'
+                f'{nd}'
+                f'<div style="flex:1;border-left:2px solid {BR};border-top:2px solid {BR};'
+                f'border-radius:5px 0 0 0;margin-right:36px"></div>'
+                f'</div>'
+            )
+            return (
+                f'<div style="display:flex;align-items:stretch">'
+                f'{conn}'
+                f'<div style="display:flex;flex-direction:column;gap:{gap}">'
+                f'{top}{bottom}</div>'
+                f'</div>'
+            )
+
+    # ── Left bracket  (R32 74–80, reads left → right) ───────────────────────
+    r16_89 = bpair(match_card(74), match_card(77), "R16<br>M89", "right")
+    r16_90 = bpair(match_card(73), match_card(75), "R16<br>M90", "right")
+    r16_91 = bpair(match_card(76), match_card(78), "R16<br>M91", "right")
+    r16_92 = bpair(match_card(79), match_card(80), "R16<br>M92", "right")
+
+    qf_97  = bpair(r16_89, r16_90, "QF<br>M97",  "right", gap="14px")
+    qf_99  = bpair(r16_91, r16_92, "QF<br>M99",  "right", gap="14px")
+
+    sf_101 = bpair(qf_97,  qf_99,  "SF<br>M101", "right", gap="20px")
+
+    # ── Right bracket (R32 81–88, reads right → left) ───────────────────────
+    r16_93 = bpair(match_card(83), match_card(84), "R16<br>M93", "left")
+    r16_94 = bpair(match_card(81), match_card(82), "R16<br>M94", "left")
+    r16_95 = bpair(match_card(86), match_card(88), "R16<br>M95", "left")
+    r16_96 = bpair(match_card(85), match_card(87), "R16<br>M96", "left")
+
+    qf_98  = bpair(r16_93, r16_94, "QF<br>M98",  "left", gap="14px")
+    qf_100 = bpair(r16_95, r16_96, "QF<br>M100", "left", gap="14px")
+
+    sf_102 = bpair(qf_98,  qf_100, "SF<br>M102", "left", gap="20px")
+
+    # ── Final center column ──────────────────────────────────────────────────
+    final = (
+        f'<div style="display:flex;flex-direction:column;align-items:center;'
+        f'justify-content:center;padding:14px 12px;font-size:10px;font-weight:800;'
+        f'color:var(--gold);border:2px solid var(--gold);border-radius:8px;'
+        f'background:var(--surf2);flex-shrink:0;align-self:stretch;'
+        f'writing-mode:vertical-lr;text-orientation:mixed;letter-spacing:.12em;'
+        f'white-space:nowrap">\U0001f3c6 FINAL \U0001f3c6</div>'
+    )
+
     return (
-        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
-        f'{cards}</div>'
+        f'<div style="background:var(--surf);border:1px solid {BR};'
+        f'border-radius:10px;overflow:hidden">'
+        f'<div style="background:var(--surf2);padding:9px 14px;'
+        f'border-bottom:1px solid {BR};display:flex;justify-content:space-between;'
+        f'align-items:center">'
+        f'<span style="font-weight:700;font-size:14px;color:var(--text)">'
+        f'Round of 32 — Matchup Probabilities</span>'
+        f'<span style="font-size:11px;color:var(--muted)">{n_sims:,} simulations</span>'
+        f'</div>'
+        f'<div style="padding:14px;overflow-x:auto">'
+        f'<div style="display:flex;align-items:stretch;min-width:max-content">'
+        f'{sf_101}{final}{sf_102}'
+        f'</div>'
+        f'</div>'
+        f'<div style="padding:6px 14px;font-size:11px;color:var(--muted);'
+        f'border-top:1px solid {BR}">'
+        f'% = P(that exact matchup is played) across all simulations. '
+        f'R16 / QF / SF / Final show bracket path only — no predictions.'
+        f'</div></div>'
+    )
+
+
+def build_bracket_view(bracket_data: dict, n_sims: int) -> str:
+    """
+    Full tournament bracket visualization (R32 → R16 → QF → SF → Final).
+    Shows the most likely team in each slot with their probability.
+    Gold highlight = most likely winner of that match.
+    """
+    r32_s1 = bracket_data["r32_s1"]
+    r32_s2 = bracket_data["r32_s2"]
+    r32_w  = bracket_data["r32_w"]
+    r16_w  = bracket_data["r16_wm"]   # match-indexed version
+    qf_w   = bracket_data["qf_wm"]
+    sf_w   = bracket_data["sf_wm"]
+    champ  = bracket_data["champ"]
+
+    def top(d):
+        if not d: return "TBD", 0.0
+        t, c = max(d.items(), key=lambda x: x[1])
+        return t, c / n_sims * 100
+
+    def slot_html(team, pct, is_win=False, align="left"):
+        flag = FLAGS.get(team, "")
+        bg  = "rgba(251,191,36,.15)" if is_win else "rgba(22,26,40,.8)"
+        bdr = "1px solid rgba(251,191,36,.5)" if is_win else "1px solid rgba(46,51,71,.6)"
+        tc  = "#fbbf24" if is_win else "#9aa3be"
+        pc  = "rgba(251,191,36,.8)" if is_win else "rgba(107,116,148,.8)"
+        fw  = "700" if is_win else "500"
+        ps  = f"{pct:.0f}%" if pct >= 0.5 else ""
+        if align == "right":
+            inner = (f'<span style="font-size:8px;color:{pc};flex-shrink:0;margin-right:5px">{ps}</span>'
+                     f'<span>{team}&nbsp;{flag}</span>')
+            jc = "flex-end"
+        else:
+            inner = (f'<span>{flag}&nbsp;{team}</span>'
+                     f'<span style="font-size:8px;color:{pc};flex-shrink:0;margin-left:5px">{ps}</span>')
+            jc = "flex-start"
+        return (f'<div style="background:{bg};border:{bdr};border-radius:3px;padding:3px 7px;'
+                f'font-size:0.71rem;font-weight:{fw};color:{tc};white-space:nowrap;overflow:hidden;'
+                f'max-width:148px;min-width:108px;display:flex;justify-content:{jc};align-items:center;">'
+                f'{inner}</div>')
+
+    def mpair(t1, p1, t2, p2, winner, align="left"):
+        return (f'<div style="display:flex;flex-direction:column;gap:2px;margin:4px 0;">'
+                + slot_html(t1, p1, t1 == winner, align)
+                + slot_html(t2, p2, t2 == winner, align)
+                + '</div>')
+
+    def col(html, label):
+        return (f'<div style="display:flex;flex-direction:column;">'
+                f'<div style="font-size:8.5px;font-weight:700;color:var(--muted);text-transform:uppercase;'
+                f'letter-spacing:.07em;margin-bottom:6px;text-align:center">{label}</div>'
+                f'<div style="display:flex;flex-direction:column;justify-content:space-around;flex:1;">'
+                f'{html}</div></div>')
+
+    # ── Round helpers ─────────────────────────────────────────────────────────
+    def mr32(mn, align="left"):
+        t1, p1 = top(r32_s1[mn]);  t2, p2 = top(r32_s2[mn])
+        w, _ = top(r32_w[mn])
+        return mpair(t1, p1, t2, p2, w, align)
+
+    def mr16(mn, f1, f2, align="left"):
+        t1, p1 = top(r32_w[f1]);  t2, p2 = top(r32_w[f2])
+        w, _ = top(r16_w[mn])
+        return mpair(t1, p1, t2, p2, w, align)
+
+    def mqf(mn, f1, f2, align="left"):
+        t1, p1 = top(r16_w[f1]);  t2, p2 = top(r16_w[f2])
+        w, _ = top(qf_w[mn])
+        return mpair(t1, p1, t2, p2, w, align)
+
+    def msf(mn, f1, f2, align="left"):
+        t1, p1 = top(qf_w[f1]);  t2, p2 = top(qf_w[f2])
+        w, _ = top(sf_w[mn])
+        return mpair(t1, p1, t2, p2, w, align)
+
+    # ── Build columns ─────────────────────────────────────────────────────────
+    L = "left";  R = "right"
+
+    l_r32 = col(mr32(74)+mr32(77)+mr32(73)+mr32(75)+mr32(76)+mr32(78)+mr32(79)+mr32(80), "R32")
+    l_r16 = col(mr16(89,74,77)+mr16(90,73,75)+mr16(91,76,78)+mr16(92,79,80), "R16")
+    l_qf  = col(mqf(97,89,90)+mqf(99,91,92), "QF")
+    l_sf  = col(msf(101,97,98), "SF")
+
+    r_r32 = col(mr32(83,R)+mr32(84,R)+mr32(81,R)+mr32(82,R)+mr32(86,R)+mr32(88,R)+mr32(85,R)+mr32(87,R), "R32")
+    r_r16 = col(mr16(93,83,84,R)+mr16(94,81,82,R)+mr16(95,86,88,R)+mr16(96,85,87,R), "R16")
+    r_qf  = col(mqf(98,93,94,R)+mqf(100,95,96,R), "QF")
+    r_sf  = col(msf(102,99,100,R), "SF")
+
+    # ── Final + Champion ──────────────────────────────────────────────────────
+    f1, fp1 = top(sf_w[101])
+    f2, fp2 = top(sf_w[102])
+    ch, chp = top(champ)
+    ch_flag = FLAGS.get(ch, "")
+
+    final_col = (
+        f'<div style="display:flex;flex-direction:column;align-items:center;'
+        f'justify-content:center;gap:4px;padding:0 14px;flex-shrink:0;">'
+        f'<div style="font-size:8.5px;font-weight:700;color:var(--muted);text-transform:uppercase;'
+        f'letter-spacing:.07em;margin-bottom:4px">FINAL</div>'
+        + slot_html(f1, fp1, f1 == ch)
+        + slot_html(f2, fp2, f2 == ch)
+        + f'<div style="margin-top:14px;text-align:center;padding:10px 12px;'
+        f'background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.25);border-radius:6px;">'
+        f'<div style="font-size:8.5px;font-weight:700;color:var(--gold);text-transform:uppercase;'
+        f'letter-spacing:.07em;margin-bottom:6px">Champion</div>'
+        f'<div style="font-size:22px;line-height:1">{ch_flag}</div>'
+        f'<div style="font-size:13px;font-weight:800;color:var(--gold);margin-top:4px">{ch}</div>'
+        f'<div style="font-size:10px;color:var(--muted);margin-top:2px">{chp:.1f}% probability</div>'
+        f'</div></div>'
+    )
+
+    bracket = (
+        f'<div style="display:flex;align-items:stretch;gap:3px;min-width:max-content;padding:6px 0;">'
+        + l_r32 + l_r16 + l_qf + l_sf
+        + final_col
+        + r_sf + r_qf + r_r16 + r_r32
+        + f'</div>'
+    )
+
+    return (
+        f'<div style="background:var(--surf);border:1px solid var(--border);border-radius:10px;overflow:hidden">'
+        f'<div style="background:var(--surf2);padding:9px 14px;border-bottom:1px solid var(--border);'
+        f'display:flex;justify-content:space-between;align-items:center">'
+        f'<span style="font-weight:700;font-size:14px;color:var(--text)">Most Likely Bracket</span>'
+        f'<span style="font-size:11px;color:var(--muted)">{n_sims:,} simulations · '
+        f'gold = most likely match winner · % = P(team in that slot)</span>'
+        f'</div>'
+        f'<div style="overflow-x:auto;padding:12px 10px">{bracket}</div>'
+        f'<div style="padding:6px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)">'
+        f'Each slot shows the most likely team. R32 % = P(in that seeded slot). '
+        f'Later rounds % = P(won all prior matches to reach that position).'
+        f'</div></div>'
     )
 
 
@@ -1465,7 +1687,7 @@ def build_tournament_table(bracket_data: dict, n_sims: int) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # LOAD DATA
 # ─────────────────────────────────────────────────────────────────────────────
-CSV_PATH    = os.path.join(os.path.dirname(__file__), "all_international_soccer_results.csv")
+CSV_PATH    = os.path.join(os.path.dirname(__file__), "results.csv")
 CSV_FTABLE  = os.path.join(os.path.dirname(__file__), "third_place_combinations.csv")
 team_stats  = load_team_stats(CSV_PATH, cutoff_year=2018)
 ftable      = load_ftable(CSV_FTABLE)
@@ -1523,7 +1745,7 @@ _sim_n_display = (
 tab_bt, tab_groups, tab_r32, tab_hist = st.tabs([
     f"🏆 Best Third Place Teams · {_sim_n_display}",
     f"⚽ Groups & Results · {_sim_n_display}",
-    f"🗓️ R32 Bracket · {_sim_n_display}",
+    f"🗓️ R32 Matchup Probabilities · {_sim_n_display}",
     "📊 Historical Reference",
 ])
 
