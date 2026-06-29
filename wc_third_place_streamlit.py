@@ -1016,7 +1016,7 @@ def run_monte_carlo(n_sims: int, team_stats: dict, ftable: dict = None):
             "all_teams":  all_teams,
         })
 
-    group_data.sort(key=lambda x: -x["p_advance"])
+    group_data.sort(key=lambda x: -x["adv_given"])
 
     bracket_data = {
         "r32_s1": r32_s1,
@@ -1468,29 +1468,42 @@ def build_r32_cards(bracket_data: dict, n_sims: int) -> str:
 
 def build_bracket_view(bracket_data: dict, n_sims: int) -> str:
     """
-    Full tournament bracket visualization (R32 → R16 → QF → SF → Final).
-    Shows the most likely team in each slot with their probability.
-    Gold highlight = most likely winner of that match.
+    Predicted bracket (R32 → Final). Each match shows the two most likely
+    opponents with head-to-head win odds (normalized between the top 2 teams
+    projected to meet in that slot). Gold = predicted winner / higher odds.
     """
     r32_s1 = bracket_data["r32_s1"]
     r32_s2 = bracket_data["r32_s2"]
     r32_w  = bracket_data["r32_w"]
-    r16_w  = bracket_data["r16_wm"]   # match-indexed version
+    r16_w  = bracket_data["r16_wm"]
     qf_w   = bracket_data["qf_wm"]
     sf_w   = bracket_data["sf_wm"]
+    final  = bracket_data["final"]
     champ  = bracket_data["champ"]
 
-    def top(d):
-        if not d: return "TBD", 0.0
-        t, c = max(d.items(), key=lambda x: x[1])
-        return t, c / n_sims * 100
+    def top1(d):
+        """Return (team, count) for the most frequent team in d."""
+        if not d: return "TBD", 0
+        return max(d.items(), key=lambda x: x[1])
+
+    def win_odds(d):
+        """
+        Top 2 teams from dict d, with head-to-head win % normalized between them.
+        Returns ((t1,p1), (t2,p2)) where p1+p2 = 100.
+        """
+        if not d: return ("TBD", 50.0), ("TBD", 50.0)
+        ranked = sorted(d.items(), key=lambda x: -x[1])
+        t1, c1 = ranked[0]
+        t2, c2 = ranked[1] if len(ranked) > 1 else ("TBD", 0)
+        total  = c1 + c2 or 1
+        return (t1, c1 / total * 100), (t2, c2 / total * 100)
 
     def slot_html(team, pct, is_win=False, align="left"):
         flag = FLAGS.get(team, "")
         bg  = "rgba(251,191,36,.15)" if is_win else "rgba(22,26,40,.8)"
         bdr = "1px solid rgba(251,191,36,.5)" if is_win else "1px solid rgba(46,51,71,.6)"
         tc  = "#fbbf24" if is_win else "#9aa3be"
-        pc  = "rgba(251,191,36,.8)" if is_win else "rgba(107,116,148,.8)"
+        pc  = "rgba(251,191,36,.9)" if is_win else "rgba(107,116,148,.8)"
         fw  = "700" if is_win else "500"
         ps  = f"{pct:.0f}%" if pct >= 0.5 else ""
         if align == "right":
@@ -1520,28 +1533,41 @@ def build_bracket_view(bracket_data: dict, n_sims: int) -> str:
                 f'{html}</div></div>')
 
     # ── Round helpers ─────────────────────────────────────────────────────────
+    def _norm(w1, w2):
+        """Normalize two win counts to percentages summing to 100."""
+        total = w1 + w2 or 1
+        return w1/total*100, w2/total*100
+
     def mr32(mn, align="left"):
-        t1, p1 = top(r32_s1[mn]);  t2, p2 = top(r32_s2[mn])
-        w, _ = top(r32_w[mn])
-        return mpair(t1, p1, t2, p2, w, align)
+        # t1 = most likely group-winner slot; t2 = most likely best-3rd slot.
+        t1, _ = top1(r32_s1[mn]);  t2, _ = top1(r32_s2[mn])
+        w1 = r32_w[mn].get(t1, 0); w2 = r32_w[mn].get(t2, 0)
+        p1, p2 = _norm(w1, w2)
+        return mpair(t1, p1, t2, p2, t1 if w1 >= w2 else t2, align)
 
     def mr16(mn, f1, f2, align="left"):
-        t1, p1 = top(r32_w[f1]);  t2, p2 = top(r32_w[f2])
-        w, _ = top(r16_w[mn])
-        return mpair(t1, p1, t2, p2, w, align)
+        # t1/t2 = most likely winner of each R32 feeder match.
+        t1, _ = top1(r32_w[f1]);  t2, _ = top1(r32_w[f2])
+        w1 = r16_w[mn].get(t1, 0); w2 = r16_w[mn].get(t2, 0)
+        p1, p2 = _norm(w1, w2)
+        return mpair(t1, p1, t2, p2, t1 if w1 >= w2 else t2, align)
 
     def mqf(mn, f1, f2, align="left"):
-        t1, p1 = top(r16_w[f1]);  t2, p2 = top(r16_w[f2])
-        w, _ = top(qf_w[mn])
-        return mpair(t1, p1, t2, p2, w, align)
+        # t1/t2 = most likely winner of each R16 feeder match.
+        t1, _ = top1(r16_w[f1]);  t2, _ = top1(r16_w[f2])
+        w1 = qf_w[mn].get(t1, 0); w2 = qf_w[mn].get(t2, 0)
+        p1, p2 = _norm(w1, w2)
+        return mpair(t1, p1, t2, p2, t1 if w1 >= w2 else t2, align)
 
     def msf(mn, f1, f2, align="left"):
-        t1, p1 = top(qf_w[f1]);  t2, p2 = top(qf_w[f2])
-        w, _ = top(sf_w[mn])
-        return mpair(t1, p1, t2, p2, w, align)
+        # t1/t2 = most likely winner of each QF feeder match.
+        t1, _ = top1(qf_w[f1]);  t2, _ = top1(qf_w[f2])
+        w1 = sf_w[mn].get(t1, 0); w2 = sf_w[mn].get(t2, 0)
+        p1, p2 = _norm(w1, w2)
+        return mpair(t1, p1, t2, p2, t1 if w1 >= w2 else t2, align)
 
     # ── Build columns ─────────────────────────────────────────────────────────
-    L = "left";  R = "right"
+    R = "right"
 
     l_r32 = col(mr32(74)+mr32(77)+mr32(73)+mr32(75)+mr32(76)+mr32(78)+mr32(79)+mr32(80), "R32")
     l_r16 = col(mr16(89,74,77)+mr16(90,73,75)+mr16(91,76,78)+mr16(92,79,80), "R16")
@@ -1554,9 +1580,12 @@ def build_bracket_view(bracket_data: dict, n_sims: int) -> str:
     r_sf  = col(msf(102,99,100,R), "SF")
 
     # ── Final + Champion ──────────────────────────────────────────────────────
-    f1, fp1 = top(sf_w[101])
-    f2, fp2 = top(sf_w[102])
-    ch, chp = top(champ)
+    # Finalists = most likely winners of each SF. Win odds from champ dict.
+    f1, _ = top1(sf_w[101]);  f2, _ = top1(sf_w[102])
+    fw1 = champ.get(f1, 0);   fw2 = champ.get(f2, 0)
+    fp1, fp2 = _norm(fw1, fw2)
+    ch, _   = top1(champ)
+    chp     = champ.get(ch, 0) / n_sims * 100
     ch_flag = FLAGS.get(ch, "")
 
     final_col = (
@@ -1588,14 +1617,15 @@ def build_bracket_view(bracket_data: dict, n_sims: int) -> str:
         f'<div style="background:var(--surf);border:1px solid var(--border);border-radius:10px;overflow:hidden">'
         f'<div style="background:var(--surf2);padding:9px 14px;border-bottom:1px solid var(--border);'
         f'display:flex;justify-content:space-between;align-items:center">'
-        f'<span style="font-weight:700;font-size:14px;color:var(--text)">Most Likely Bracket</span>'
+        f'<span style="font-weight:700;font-size:14px;color:var(--text)">Predicted Bracket</span>'
         f'<span style="font-size:11px;color:var(--muted)">{n_sims:,} simulations · '
-        f'gold = most likely match winner · % = P(team in that slot)</span>'
+        f'gold = predicted winner · % = P(win this match)</span>'
         f'</div>'
         f'<div style="overflow-x:auto;padding:12px 10px">{bracket}</div>'
         f'<div style="padding:6px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)">'
-        f'Each slot shows the most likely team. R32 % = P(in that seeded slot). '
-        f'Later rounds % = P(won all prior matches to reach that position).'
+        f'Each match shows the two most likely opponents. '
+        f'% = win probability normalized between those two teams. '
+        f'Gold = predicted match winner who advances.'
         f'</div></div>'
     )
 
@@ -1687,7 +1717,7 @@ def build_tournament_table(bracket_data: dict, n_sims: int) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # LOAD DATA
 # ─────────────────────────────────────────────────────────────────────────────
-CSV_PATH    = os.path.join(os.path.dirname(__file__), "all_international_soccer_results.csv")
+CSV_PATH    = os.path.join(os.path.dirname(__file__), "results.csv")
 CSV_FTABLE  = os.path.join(os.path.dirname(__file__), "third_place_combinations.csv")
 team_stats  = load_team_stats(CSV_PATH, cutoff_year=2018)
 ftable      = load_ftable(CSV_FTABLE)
@@ -1745,7 +1775,7 @@ _sim_n_display = (
 tab_bt, tab_groups, tab_r32, tab_hist = st.tabs([
     f"🏆 Best Third Place Teams · {_sim_n_display}",
     f"⚽ Groups & Results · {_sim_n_display}",
-    f"🗓️ R32 Matchup Probabilities · {_sim_n_display}",
+    f"🗓️ Predicted Bracket · {_sim_n_display}",
     "📊 Historical Reference",
 ])
 
@@ -1926,7 +1956,7 @@ with tab_r32:
   </p>
 </div>""")
 
-        st.html(build_r32_cards(_bracket, _r32_n))
+        st.html(build_bracket_view(_bracket, _r32_n))
         st.write("")
         st.html(build_tournament_table(_bracket, _r32_n))
 
